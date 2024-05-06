@@ -138,6 +138,28 @@ def save_mask_data(output_dir, mask_list, box_list, label_list):
         json.dump(json_data, f)
 
 
+def get_bounding_boxes(mask_map):
+    # 初始化一个列表来存储bounding boxes
+    bounding_boxes = []
+
+    # 使用np.unique获取所有独立物体的索引（除去背景）
+    unique_labels = np.unique(mask_map)
+    unique_labels = unique_labels[unique_labels != 0]  # 去掉背景标签（假设背景为0）
+
+    # 遍历每一个物体，计算其bounding box
+    for label in unique_labels:
+        # 获取当前物体的mask
+        object_mask = np.where(mask_map == label, 255, 0).astype(np.uint8)
+
+        # 计算bounding box
+        x, y, w, h = cv2.boundingRect(object_mask)
+
+        # 将bounding box添加到列表中
+        bounding_boxes.append((x, y, x+w, y+h))
+
+    return bounding_boxes
+
+
 # parser = argparse.ArgumentParser("Grounded-Segment-Anything Demo", add_help=True)
 # parser.add_argument("--config", type=str, required=True, help="path to config file")
 # parser.add_argument(
@@ -182,7 +204,8 @@ use_sam_hq = False
 dataset_root = '/media/gpuadmin/rcao/dataset/graspnet'
 # text_prompt = "object. animal. fruit. "
 text_prompt = "objects"
-mask_save_root = os.path.join(dataset_root, 'GDS_v0.1.1_mask')
+gt_box = True
+mask_save_root = os.path.join(dataset_root, 'GT_bb_sam_mask')
 # make dir
 os.makedirs(mask_save_root, exist_ok=True)
 
@@ -202,31 +225,37 @@ else:
 
 # load image
 # scene_list = trange(130, 160)
-scene_list = trange(100, 130)
+scene_list = trange(100, 190)
 for scene_idx in scene_list:
     for view_idx in range(256):
         image_path = os.path.join(dataset_root, 'scenes/scene_{:04d}/{}/rgb/{:04d}.png'.format(scene_idx, camera_type, view_idx))
+        mask_path = os.path.join(dataset_root, 'scenes/scene_{:04d}/{}/label/{:04d}.png'.format(scene_idx, camera_type, view_idx))
         image_pil, image = load_image(image_path)
 
-        # run grounding dino model
-        boxes_filt, pred_phrases = get_grounding_output(
-            model, image, text_prompt, box_threshold, text_threshold, device=device
-        )
+        if gt_box:
+            gt_mask = np.array(Image.open(mask_path))
+            gt_bb = get_bounding_boxes(gt_mask)
+            input_bb = torch.tensor(gt_bb)
+            pred_phrases = ['object' for i in range(len(input_bb))]
+        else:
+            # run grounding dino model
+            boxes_filt, pred_phrases = get_grounding_output(
+                model, image, text_prompt, box_threshold, text_threshold, device=device
+            )
 
-        image = cv2.imread(image_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        predictor.set_image(image)
+            size = image_pil.size
+            H, W = size[1], size[0]
+            for i in range(boxes_filt.size(0)):
+                boxes_filt[i] = boxes_filt[i] * torch.Tensor([W, H, W, H])
+                boxes_filt[i][:2] -= boxes_filt[i][2:] / 2
+                boxes_filt[i][2:] += boxes_filt[i][:2]
 
-        size = image_pil.size
-        H, W = size[1], size[0]
-        for i in range(boxes_filt.size(0)):
-            boxes_filt[i] = boxes_filt[i] * torch.Tensor([W, H, W, H])
-            boxes_filt[i][:2] -= boxes_filt[i][2:] / 2
-            boxes_filt[i][2:] += boxes_filt[i][:2]
+            input_bb = boxes_filt.cpu()
 
-        boxes_filt = boxes_filt.cpu()
-        transformed_boxes = predictor.transform.apply_boxes_torch(boxes_filt, image.shape[:2]).to(device)
-
+        input_image = cv2.imread(image_path)
+        input_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB)
+        predictor.set_image(input_image)
+        transformed_boxes = predictor.transform.apply_boxes_torch(input_bb, input_image.shape[:2]).to(device)
         masks, _, _ = predictor.predict_torch(
             point_coords=None,
             point_labels=None,
@@ -236,11 +265,11 @@ for scene_idx in scene_list:
 
         # # draw output image
         # plt.figure(figsize=(10, 10))
-        # plt.imshow(image)
+        # plt.imshow(input_image)
+        # for box, label in zip(input_bb, pred_phrases):
+        #     show_box(box.numpy(), plt.gca(), label)
         # for mask in masks:
         #     show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
-        # for box, label in zip(boxes_filt, pred_phrases):
-        #     show_box(box.numpy(), plt.gca(), label)
 
         # plt.axis('off')
         # plt.savefig(
@@ -248,7 +277,7 @@ for scene_idx in scene_list:
         #     bbox_inches="tight", dpi=300, pad_inches=0.0
         # )
         masks = masks.detach().cpu().numpy()
-        pred_mask = np.zeros((image.shape[0], image.shape[1]))
+        pred_mask = np.zeros((input_image.shape[0], input_image.shape[1]))
         for inst_id, inst_mask in enumerate(masks):
             pred_mask[inst_mask[0]] = inst_id + 1
 
@@ -257,5 +286,5 @@ for scene_idx in scene_list:
         mask_save_path = os.path.join(mask_save_root, 'scene_{:04}'.format(scene_idx), camera_type)
         os.makedirs(mask_save_path, exist_ok=True)
         result.save(os.path.join(mask_save_path, '{:04}.png'.format(view_idx)))
-        
+
         # save_mask_data(output_dir, masks, boxes_filt, pred_phrases)

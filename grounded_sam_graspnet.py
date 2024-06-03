@@ -1,8 +1,6 @@
 import argparse
 import sys
-
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 import numpy as np
 import json
@@ -28,7 +26,7 @@ from segment_anything import (
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-
+import torchvision
 
 def load_image(image_path):
     # load image
@@ -82,14 +80,16 @@ def get_grounding_output(model, image, caption, box_threshold, text_threshold, w
     tokenized = tokenlizer(caption)
     # build pred
     pred_phrases = []
+    scores = []
     for logit, box in zip(logits_filt, boxes_filt):
         pred_phrase = get_phrases_from_posmap(logit > text_threshold, tokenized, tokenlizer)
         if with_logits:
             pred_phrases.append(pred_phrase + f"({str(logit.max().item())[:4]})")
         else:
             pred_phrases.append(pred_phrase)
-
-    return boxes_filt, pred_phrases
+        scores.append(logit.max().item())
+        
+    return boxes_filt, torch.Tensor(scores), pred_phrases
 
 
 def show_mask(mask, ax, random_color=False):
@@ -160,61 +160,95 @@ def get_bounding_boxes(mask_map):
     return bounding_boxes
 
 
-# parser = argparse.ArgumentParser("Grounded-Segment-Anything Demo", add_help=True)
-# parser.add_argument("--config", type=str, required=True, help="path to config file")
-# parser.add_argument(
-#     "--grounded_checkpoint", type=str, required=True, help="path to checkpoint file"
-# )
-# parser.add_argument(
-#     "--sam_version", type=str, default="vit_h", required=False, help="SAM ViT version: vit_b / vit_l / vit_h"
-# )
-# parser.add_argument(
-#     "--sam_checkpoint", type=str, required=False, help="path to sam checkpoint file"
-# )
-# parser.add_argument(
-#     "--sam_hq_checkpoint", type=str, default=None, help="path to sam-hq checkpoint file"
-# )
-# parser.add_argument(
-#     "--use_sam_hq", action="store_true", help="using sam-hq for prediction"
-# )
-# parser.add_argument("--input_image", type=str, required=True, help="path to image file")
-# parser.add_argument("--text_prompt", type=str, required=True, help="text prompt")
-# parser.add_argument(
-#     "--output_dir", "-o", type=str, default="outputs", required=True, help="output directory"
-# )
-#
-# parser.add_argument("--box_threshold", type=float, default=0.3, help="box threshold")
-# parser.add_argument("--text_threshold", type=float, default=0.25, help="text threshold")
-#
-# parser.add_argument("--device", type=str, default="cpu", help="running on cpu only!, default=False")
-# args = parser.parse_args()
-
+parser = argparse.ArgumentParser("Grounded-Segment-Anything Demo", add_help=True)
+parser.add_argument("--config", type=str, default="GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py", help="path to config file")
+parser.add_argument(
+    "--grounded_checkpoint", type=str, default="groundingdino_swint_graspnet_tune.pth", help="path to checkpoint file"
+)
+parser.add_argument(
+    "--sam_version", type=str, default="vit_h", help="SAM ViT version: vit_b / vit_l / vit_h"
+)
+parser.add_argument(
+    "--sam_checkpoint", type=str, default="./sam_vit_h_4b8939.pth", help="path to sam checkpoint file"
+)
+parser.add_argument(
+    "--sam_hq_checkpoint", type=str, default="./sam_hq_vit_h.pth", help="path to sam-hq checkpoint file"
+)
+parser.add_argument(
+    "--use_sam_hq", action="store_true", help="using sam-hq for prediction"
+)
+parser.add_argument(
+    "--use_use_nms", action="store_true", help="using NMS for prediction"
+)
+parser.add_argument("--dataset_root", type=str, default="/media/gpuadmin/rcao/dataset/graspnet", help="dataset root")
+parser.add_argument("--save_vis", action="store_true", help="flag to save visualization")
+parser.add_argument("--method_id", type=str, required=True, help="method id")
+parser.add_argument("--camera_type", type=str, default='realsense', help="camera type")
+parser.add_argument("--test_split", type=str, required=True, help="box threshold")
+parser.add_argument("--box_threshold", type=float, default=0.3, help="box threshold")
+parser.add_argument("--text_threshold", type=float, default=0.3, help="text threshold")
+parser.add_argument("--iou_threshold", type=float, default=0.3, help="iou threshold for NMS")
+args = parser.parse_args()
+print(args)
 
 # cfg
 # config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
 # grounded_checkpoint = "./groundingdino_swint_ogc.pth"
 
-config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinB.py"
-grounded_checkpoint = "./groundingdino_swinb_cogcoor.pth"
+# config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinB.py"
+# grounded_checkpoint = "./groundingdino_swinb_tune.pth"
+# grounded_checkpoint = "./groundingdino_swinb_cogcoor.pth"
 
-sam_version = "vit_h"
-sam_checkpoint = "./sam_vit_h_4b8939.pth"
-sam_hq_checkpoint = None
-use_sam_hq = False
-dataset_root = '/media/gpuadmin/rcao/dataset/graspnet'
+config_file = args.config
+grounded_checkpoint = args.grounded_checkpoint
+
+sam_version = args.sam_version
+sam_checkpoint = args.sam_checkpoint
+sam_hq_checkpoint = args.sam_hq_checkpoint
+use_sam_hq = args.use_sam_hq
+use_nms = args.use_use_nms
+dataset_root = args.dataset_root
 # text_prompt = "object. animal. fruit. "
-text_prompt = "objects"
-gt_box = True
-mask_save_root = os.path.join(dataset_root, 'GT_bb_sam_mask')
-# make dir
+# text_prompt = "object. fruit. animal. "
+# object_list = [
+#     "Fruit",        # Includes all types of fruits.
+#     "Food",         # Includes all types of food items except fruits.
+#     "Animal",    # 
+#     "Tool",         # Tools and equipment for building, repairing, or other practical tasks.
+#     "Product",    
+#     "Care",       # Products related to personal care and cleanliness.
+#     "Toy"           # Items for play and recreation, including games and animal figures.
+# ]
+
+# # Creating a single string with each item separated by a period
+# text_prompt = ". ".join(object_list)
+text_prompt = 'object'
+gt_box = False
+method_id = args.method_id
+mask_save_root = os.path.join('/media/gpuadmin/rcao/result/uois/graspnet', method_id + '_mask')
 os.makedirs(mask_save_root, exist_ok=True)
+split = args.test_split # 'test_seen', 'test_similar', 'test_novel'
+camera_type = args.camera_type
+box_threshold = args.box_threshold
+text_threshold = args.text_threshold
+iou_threshold = args.iou_threshold
 
-camera_type = 'realsense'
-box_threshold = 0.27
-text_threshold = 0.3
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+vis_save = args.save_vis
+vis_save_index = [63]
+# vis_save_index = list(range(256))
+vis_save_root = os.path.join(mask_save_root, 'vis')
+os.makedirs(vis_save_root, exist_ok=True)
+if split == 'test_seen':
+    scene_list = trange(100, 130)
+elif split == 'test_similar':
+    scene_list = trange(130, 160)
+elif split == 'test_novel':
+    scene_list = trange(160, 190)
+elif split == 'test':
+    scene_list = trange(100, 190)
+
 # initialize SAM
-
 # load model
 model = load_model(config_file, grounded_checkpoint, device=device)
 
@@ -225,21 +259,27 @@ else:
 
 # load image
 # scene_list = trange(130, 160)
-scene_list = trange(100, 190)
 for scene_idx in scene_list:
     for view_idx in range(256):
         image_path = os.path.join(dataset_root, 'scenes/scene_{:04d}/{}/rgb/{:04d}.png'.format(scene_idx, camera_type, view_idx))
         mask_path = os.path.join(dataset_root, 'scenes/scene_{:04d}/{}/label/{:04d}.png'.format(scene_idx, camera_type, view_idx))
         image_pil, image = load_image(image_path)
-
+        
+        # if scene_idx== 187 and view_idx >=62 and view_idx <= 221:
+        #     gt_box = True
+        # else:
+        #     gt_box = False
         if gt_box:
             gt_mask = np.array(Image.open(mask_path))
             gt_bb = get_bounding_boxes(gt_mask)
             input_bb = torch.tensor(gt_bb)
+            # if view_idx == 64:
+            #     import copy
+            #     record_bb = copy.deepcopy(input_bb)
             pred_phrases = ['object' for i in range(len(input_bb))]
         else:
             # run grounding dino model
-            boxes_filt, pred_phrases = get_grounding_output(
+            boxes_filt, scores, pred_phrases = get_grounding_output(
                 model, image, text_prompt, box_threshold, text_threshold, device=device
             )
 
@@ -252,6 +292,16 @@ for scene_idx in scene_list:
 
             input_bb = boxes_filt.cpu()
 
+            if use_nms:
+                # use NMS to handle overlapped boxes
+                # print(f"Before NMS: {input_bb.shape[0]} boxes")
+                nms_idx = torchvision.ops.nms(input_bb, scores, iou_threshold).numpy().tolist()
+                input_bb = input_bb[nms_idx]
+                pred_phrases = [pred_phrases[idx] for idx in nms_idx]
+                # print(f"After NMS: {input_bb.shape[0]} boxes")
+            
+        # if view_idx >=64 and view_idx <= 221:
+        #     input_bb = record_bb 
         input_image = cv2.imread(image_path)
         input_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB)
         predictor.set_image(input_image)
@@ -263,19 +313,23 @@ for scene_idx in scene_list:
             multimask_output=False,
         )
 
-        # # draw output image
-        # plt.figure(figsize=(10, 10))
-        # plt.imshow(input_image)
-        # for box, label in zip(input_bb, pred_phrases):
-        #     show_box(box.numpy(), plt.gca(), label)
-        # for mask in masks:
-        #     show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
+        if vis_save and view_idx in vis_save_index:
+            # draw output image
+            plt.figure(figsize=(10, 10))
+            plt.imshow(input_image)
+            for box, label in zip(input_bb, pred_phrases):
+                show_box(box.numpy(), plt.gca(), label)
+            for mask in masks:
+                show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
 
-        # plt.axis('off')
-        # plt.savefig(
-        #     os.path.join(output_dir, "grounded_sam_output.jpg"),
-        #     bbox_inches="tight", dpi=300, pad_inches=0.0
-        # )
+            vis_save_path = os.path.join(vis_save_root, camera_type)
+            os.makedirs(vis_save_path, exist_ok=True)
+            plt.axis('off')
+            plt.savefig(
+                os.path.join(vis_save_path, "{:04}_{:04}.jpg".format(scene_idx, view_idx)),
+                bbox_inches="tight", dpi=300, pad_inches=0.0
+            )
+            
         masks = masks.detach().cpu().numpy()
         pred_mask = np.zeros((input_image.shape[0], input_image.shape[1]))
         for inst_id, inst_mask in enumerate(masks):
@@ -286,5 +340,3 @@ for scene_idx in scene_list:
         mask_save_path = os.path.join(mask_save_root, 'scene_{:04}'.format(scene_idx), camera_type)
         os.makedirs(mask_save_path, exist_ok=True)
         result.save(os.path.join(mask_save_path, '{:04}.png'.format(view_idx)))
-
-        # save_mask_data(output_dir, masks, boxes_filt, pred_phrases)

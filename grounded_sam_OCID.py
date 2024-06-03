@@ -2,7 +2,7 @@ import argparse
 import sys
 
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 import numpy as np
 import json
@@ -28,6 +28,7 @@ from segment_anything import (
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+import torchvision
 
 
 def load_image(image_path):
@@ -82,14 +83,16 @@ def get_grounding_output(model, image, caption, box_threshold, text_threshold, w
     tokenized = tokenlizer(caption)
     # build pred
     pred_phrases = []
+    scores = []
     for logit, box in zip(logits_filt, boxes_filt):
         pred_phrase = get_phrases_from_posmap(logit > text_threshold, tokenized, tokenlizer)
         if with_logits:
             pred_phrases.append(pred_phrase + f"({str(logit.max().item())[:4]})")
         else:
             pred_phrases.append(pred_phrase)
-
-    return boxes_filt, pred_phrases
+        scores.append(logit.max().item())
+        
+    return boxes_filt, torch.Tensor(scores), pred_phrases
 
 
 def show_mask(mask, ax, random_color=False):
@@ -197,19 +200,26 @@ def get_bounding_boxes(mask_map):
 # config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
 # grounded_checkpoint = "./groundingdino_swint_ogc.pth"
 
-config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinB.py"
-grounded_checkpoint = "./groundingdino_swinb_cogcoor.pth"
+# config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinB.py"
+# grounded_checkpoint = "./groundingdino_swinb_cogcoor.pth"
+
+# config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinB.py"
+# grounded_checkpoint = "./groundingdino_swinb_tune.pth"
+
+config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
+grounded_checkpoint = "./groundingdino_swint_graspnet_tune.pth"
 
 sam_version = "vit_h"
 sam_checkpoint = "./sam_vit_h_4b8939.pth"
-sam_hq_checkpoint = None
-use_sam_hq = False
+sam_hq_checkpoint = "./sam_hq_vit_h.pth"
+use_sam_hq = True
 dataset_root = "/media/gpuadmin/rcao/dataset/OCID"
-
+method_id = 'GDS_v0.3.1'
 # text_prompt = "object. animal. fruit. "
-text_prompt = "objects"
-gt_box = True
-mask_save_root = os.path.join('/media/gpuadmin/rcao/result/uois/ocid', 'GT_bb_sam_mask')
+# text_prompt = "table objects"
+text_prompt = 'object'
+gt_box = False
+mask_save_root = os.path.join('/media/gpuadmin/rcao/result/uois/ocid', '{}_mask'.format(method_id))
 # make dir
 os.makedirs(mask_save_root, exist_ok=True)
 
@@ -218,13 +228,19 @@ def read_file(file_path):
     lines = f.readlines()
     data_list = []
     for line in lines:
-        data_list.append(line.strip('\n')) # 删除\n
+        data_list.append(line.strip('\n'))
     return data_list
 
 image_list = read_file(os.path.join(dataset_root, 'data_list.txt'))
 box_threshold = 0.27
 text_threshold = 0.3
+iou_threshold = 0.5
+use_nms = False
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+vis_save = True
+vis_save_interval = 100
+vis_save_root = os.path.join(mask_save_root, 'vis')
+os.makedirs(vis_save_root, exist_ok=True)
 # initialize SAM
 
 # load model
@@ -236,7 +252,7 @@ else:
     predictor = SamPredictor(sam_model_registry[sam_version](checkpoint=sam_checkpoint).to(device))
 
 # load image
-for image_path in tqdm(image_list):
+for image_idx, image_path in enumerate(tqdm(image_list)):
     image_name = os.path.basename(image_path).split('.')[0]
     image_dir = os.path.join(*os.path.dirname(image_path).split('/')[1:-1])
     image_path = os.path.join(dataset_root, 'data', image_path)
@@ -250,10 +266,10 @@ for image_path in tqdm(image_list):
         pred_phrases = ['object' for i in range(len(input_bb))]
     else:
         # run grounding dino model
-        boxes_filt, pred_phrases = get_grounding_output(
+        boxes_filt, scores, pred_phrases = get_grounding_output(
             model, image, text_prompt, box_threshold, text_threshold, device=device
         )
-
+            
         size = image_pil.size
         H, W = size[1], size[0]
         for i in range(boxes_filt.size(0)):
@@ -262,7 +278,14 @@ for image_path in tqdm(image_list):
             boxes_filt[i][2:] += boxes_filt[i][:2]
 
         input_bb = boxes_filt.cpu()
-
+        if use_nms:
+            # use NMS to handle overlapped boxes
+            # print(f"Before NMS: {input_bb.shape[0]} boxes")
+            nms_idx = torchvision.ops.nms(input_bb, scores, iou_threshold).numpy().tolist()
+            input_bb = input_bb[nms_idx]
+            pred_phrases = [pred_phrases[idx] for idx in nms_idx]
+            # print(f"After NMS: {input_bb.shape[0]} boxes")
+        
     input_image = cv2.imread(image_path)
     input_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB)
     predictor.set_image(input_image)
@@ -273,20 +296,20 @@ for image_path in tqdm(image_list):
         boxes=transformed_boxes.to(device),
         multimask_output=False,
     )
+    if vis_save and image_idx % vis_save_interval == 0:
+        # draw output image
+        plt.figure(figsize=(10, 10))
+        plt.imshow(input_image)
+        for box, label in zip(input_bb, pred_phrases):
+            show_box(box.numpy(), plt.gca(), label)
+        for mask in masks:
+            show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
 
-    # # draw output image
-    # plt.figure(figsize=(10, 10))
-    # plt.imshow(input_image)
-    # for box, label in zip(input_bb, pred_phrases):
-    #     show_box(box.numpy(), plt.gca(), label)
-    # for mask in masks:
-    #     show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
-
-    # plt.axis('off')
-    # plt.savefig(
-    #     os.path.join("grounded_sam_ocid_output.jpg"),
-    #     bbox_inches="tight", dpi=300, pad_inches=0.0
-    # )
+        plt.axis('off')
+        plt.savefig(
+            os.path.join(vis_save_root, "{}.png".format(image_name)),
+            bbox_inches="tight", dpi=300, pad_inches=0.0
+        )
     
     masks = masks.detach().cpu().numpy()
     pred_mask = np.zeros((input_image.shape[0], input_image.shape[1]))

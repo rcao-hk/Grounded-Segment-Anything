@@ -1,1 +1,0 @@
-CUDA_VISIBLE_DEVICES=2 python grounded_sam_graspnet.py --method_id 'GDS_v0.3.1' --test_split 'test_similar' --save_vis --use_sam_hq --camera_type 'kinect'

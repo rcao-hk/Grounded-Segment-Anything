@@ -193,13 +193,13 @@ def mmdet_to_groundingdino(ckpt, swin_b=False):
             new_ckpt[new_k.replace("transformer.decoder.bbox_embed", "bbox_embed")] = new_v
     return new_ckpt
 
-model_root = '/media/gpuadmin/rcao/result/uois/log/graspnet_work_dir'
-model_path = os.path.join(model_root, 'best_coco_bbox_mAP_epoch_24.pth')
+model_root = '/media/gpuadmin/rcao/result/uois/detection/uoais_v0.2'
+model_path = os.path.join(model_root, 'best_coco_bbox_mAP_epoch_2.pth')
 ckpt = torch.load(model_path, map_location="cpu")
 
 ckpt_converted = mmdet_to_groundingdino(ckpt["state_dict"])
 save_dict = {"model": ckpt_converted}
-torch.save(save_dict, 'groundingdino_swint_graspnet_tune.pth')
+torch.save(save_dict, 'groundingdino_swint_uoais_sim_tune_v2.pth')
 
 # print(checkpoint1.keys())
 

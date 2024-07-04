@@ -2,7 +2,7 @@ import argparse
 import sys
 
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 
 import numpy as np
 import json
@@ -217,20 +217,20 @@ def read_file(file_path):
 
 config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
 # grounded_checkpoint = "./groundingdino_swint_graspnet_tune.pth"
-grounded_checkpoint = "./groundingdino_swint_uoais_sim_tune_v2.pth"
+grounded_checkpoint = "./groundingdino_swint_uoais_sim_tune.pth"
 
 sam_version = "vit_h"
 sam_checkpoint = "./sam_vit_h_4b8939.pth"
 sam_hq_checkpoint = "./sam_hq_vit_h.pth"
 use_sam_hq = True
-dataset_root = "/media/gpuadmin/rcao/dataset/OCID"
-# method_id = 'GDS_v0.3.2'
-method_id = 'GDS_v0.3.3'
+dataset_root = "/media/gpuadmin/rcao/dataset/OSD"
+method_id = 'GDS_v0.3.2'
+# method_id = 'GDS_v0.3.3'
 # text_prompt = "object. animal. fruit. "
 # text_prompt = "table objects"
 text_prompt = 'object'
 gt_box = False
-mask_save_root = os.path.join('/media/gpuadmin/rcao/result/uois/ocid', '{}_mask'.format(method_id))
+mask_save_root = os.path.join('/media/gpuadmin/rcao/result/uois/osd', '{}_mask'.format(method_id))
 # make dir
 os.makedirs(mask_save_root, exist_ok=True)
 
@@ -241,7 +241,7 @@ iou_threshold = 0.5
 use_nms = False
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 vis_save = True
-vis_save_interval = 50
+vis_save_interval = 10
 vis_save_root = os.path.join(mask_save_root, 'vis')
 os.makedirs(vis_save_root, exist_ok=True)
 # initialize SAM
@@ -257,9 +257,8 @@ else:
 # load image
 for image_idx, image_path in enumerate(tqdm(image_list)):
     image_name = os.path.basename(image_path).split('.')[0]
-    image_dir = os.path.join(*os.path.dirname(image_path).split('/')[1:-1])
-    image_path = os.path.join(dataset_root, 'data', image_path)
-    mask_path = os.path.join(dataset_root, 'data', image_path.replace('rgb', 'label'))
+    image_path = os.path.join(dataset_root, image_path)
+    mask_path = os.path.join(dataset_root, image_path.replace('image_color', 'annotation'))
     image_pil, image = load_image(image_path)
 
     if gt_box:
@@ -330,6 +329,4 @@ for image_idx, image_path in enumerate(tqdm(image_list)):
     
     pred_mask = (pred_mask / np.max(pred_mask)) * 255
     result = Image.fromarray(pred_mask.astype(np.uint8))
-    mask_save_path = os.path.join(mask_save_root, image_dir)
-    os.makedirs(mask_save_path, exist_ok=True)
-    result.save(os.path.join(mask_save_path, '{}.png'.format(image_name)))
+    result.save(os.path.join(mask_save_root, '{}.png'.format(image_name)))

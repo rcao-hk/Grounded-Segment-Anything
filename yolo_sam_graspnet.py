@@ -7,15 +7,12 @@ import json
 import torch
 from PIL import Image
 from tqdm import trange
+from ultralytics import YOLO
 
-sys.path.append(os.path.join(os.getcwd(), "GroundingDINO"))
 sys.path.append(os.path.join(os.getcwd(), "segment_anything"))
 
 # Grounding DINO
 import GroundingDINO.groundingdino.datasets.transforms as T
-from GroundingDINO.groundingdino.models import build_model
-from GroundingDINO.groundingdino.util.slconfig import SLConfig
-from GroundingDINO.groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
 
 # segment anything
 from segment_anything import (
@@ -41,55 +38,6 @@ def load_image(image_path):
     )
     image, _ = transform(image_pil, None)  # 3, h, w
     return image_pil, image
-
-
-def load_model(model_config_path, model_checkpoint_path, device):
-    args = SLConfig.fromfile(model_config_path)
-    args.device = device
-    model = build_model(args)
-    checkpoint = torch.load(model_checkpoint_path, map_location="cpu")
-    load_res = model.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
-    print(load_res)
-    _ = model.eval()
-    return model
-
-
-def get_grounding_output(model, image, caption, box_threshold, text_threshold, with_logits=True, device="cpu"):
-    caption = caption.lower()
-    caption = caption.strip()
-    if not caption.endswith("."):
-        caption = caption + "."
-    model = model.to(device)
-    image = image.to(device)
-    with torch.no_grad():
-        outputs = model(image[None], captions=[caption])
-    logits = outputs["pred_logits"].cpu().sigmoid()[0]  # (nq, 256)
-    boxes = outputs["pred_boxes"].cpu()[0]  # (nq, 4)
-    logits.shape[0]
-
-    # filter output
-    logits_filt = logits.clone()
-    boxes_filt = boxes.clone()
-    filt_mask = logits_filt.max(dim=1)[0] > box_threshold
-    logits_filt = logits_filt[filt_mask]  # num_filt, 256
-    boxes_filt = boxes_filt[filt_mask]  # num_filt, 4
-    logits_filt.shape[0]
-
-    # get phrase
-    tokenlizer = model.tokenizer
-    tokenized = tokenlizer(caption)
-    # build pred
-    pred_phrases = []
-    scores = []
-    for logit, box in zip(logits_filt, boxes_filt):
-        pred_phrase = get_phrases_from_posmap(logit > text_threshold, tokenized, tokenlizer)
-        if with_logits:
-            pred_phrases.append(pred_phrase + f"({str(logit.max().item())[:4]})")
-        else:
-            pred_phrases.append(pred_phrase)
-        scores.append(logit.max().item())
-        
-    return boxes_filt, torch.Tensor(scores), pred_phrases
 
 
 def show_mask(mask, ax, random_color=False):
@@ -160,10 +108,20 @@ def get_bounding_boxes(mask_map):
     return bounding_boxes
 
 
-parser = argparse.ArgumentParser("Grounded-Segment-Anything Demo", add_help=True)
-parser.add_argument("--config", type=str, default="GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py", help="path to config file")
+def yolov8_detection(model, image, args):
+    results = model(image, stream=True, conf=args.box_threshold, iou=args.iou_threshold)  # generator of Results objects
+
+    for result in results:
+        boxes = result.boxes  # Boxes object for bbox outputs
+    
+    bbox = boxes.xyxy.tolist()
+    bbox = [[int(i) for i in box] for box in bbox]
+    return bbox
+
+
+parser = argparse.ArgumentParser("YOLO with SAM Demo", add_help=True)
 parser.add_argument(
-    "--grounded_checkpoint", type=str, default="groundingdino_swint_graspnet_tune.pth", help="path to checkpoint file"
+    "--yolo_checkpoint", type=str, default="yolov8s.pt", help="path to checkpoint file"
 )
 parser.add_argument(
     "--sam_version", type=str, default="vit_h", help="SAM ViT version: vit_b / vit_l / vit_h"
@@ -184,23 +142,12 @@ parser.add_argument("--dataset_root", type=str, default="/media/gpuadmin/rcao/da
 parser.add_argument("--save_vis", action="store_true", help="flag to save visualization")
 parser.add_argument("--method_id", type=str, required=True, help="method id")
 parser.add_argument("--camera_type", type=str, default='realsense', help="camera type")
-parser.add_argument("--test_split", type=str, required=True, help="Specify test split [test_seen, test_similar, test_novel]")
+parser.add_argument("--test_split", type=str, required=True, help="box threshold")
 parser.add_argument("--box_threshold", type=float, default=0.3, help="box threshold")
 parser.add_argument("--text_threshold", type=float, default=0.3, help="text threshold")
 parser.add_argument("--iou_threshold", type=float, default=0.3, help="iou threshold for NMS")
 args = parser.parse_args()
 print(args)
-
-# cfg
-# config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
-# grounded_checkpoint = "./groundingdino_swint_ogc.pth"
-
-# config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinB.py"
-# grounded_checkpoint = "./groundingdino_swinb_tune.pth"
-# grounded_checkpoint = "./groundingdino_swinb_cogcoor.pth"
-
-config_file = args.config
-grounded_checkpoint = args.grounded_checkpoint
 
 sam_version = args.sam_version
 sam_checkpoint = args.sam_checkpoint
@@ -208,20 +155,7 @@ sam_hq_checkpoint = args.sam_hq_checkpoint
 use_sam_hq = args.use_sam_hq
 use_nms = args.use_use_nms
 dataset_root = args.dataset_root
-# text_prompt = "object. animal. fruit. "
-# text_prompt = "object. fruit. animal. "
-# object_list = [
-#     "Fruit",        # Includes all types of fruits.
-#     "Food",         # Includes all types of food items except fruits.
-#     "Animal",    # 
-#     "Tool",         # Tools and equipment for building, repairing, or other practical tasks.
-#     "Product",    
-#     "Care",       # Products related to personal care and cleanliness.
-#     "Toy"           # Items for play and recreation, including games and animal figures.
-# ]
 
-# # Creating a single string with each item separated by a period
-# text_prompt = ". ".join(object_list)
 text_prompt = 'object'
 gt_box = False
 method_id = args.method_id
@@ -235,7 +169,7 @@ iou_threshold = args.iou_threshold
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 vis_save = args.save_vis
-vis_save_index = [63]
+vis_save_index = [63, 127]
 # vis_save_index = list(range(256))
 vis_save_root = os.path.join(mask_save_root, 'vis')
 os.makedirs(vis_save_root, exist_ok=True)
@@ -248,10 +182,11 @@ elif split == 'test_novel':
 elif split == 'test':
     scene_list = trange(100, 190)
 
-# initialize SAM
-# load model
-model = load_model(config_file, grounded_checkpoint, device=device)
+# initialize YOLO
+model = YOLO('yolo_uoais_tuned.pt')
+model.to(device)
 
+# initialize SAM
 if use_sam_hq:
     predictor = SamPredictor(sam_hq_model_registry[sam_version](checkpoint=sam_hq_checkpoint).to(device))
 else:
@@ -263,7 +198,9 @@ for scene_idx in scene_list:
     for view_idx in range(256):
         image_path = os.path.join(dataset_root, 'scenes/scene_{:04d}/{}/rgb/{:04d}.png'.format(scene_idx, camera_type, view_idx))
         mask_path = os.path.join(dataset_root, 'scenes/scene_{:04d}/{}/label/{:04d}.png'.format(scene_idx, camera_type, view_idx))
-        image_pil, image = load_image(image_path)
+
+        input_image = cv2.imread(image_path)
+        input_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB)
         
         # if scene_idx== 187 and view_idx >=62 and view_idx <= 221:
         #     gt_box = True
@@ -278,55 +215,27 @@ for scene_idx in scene_list:
             #     record_bb = copy.deepcopy(input_bb)
             pred_phrases = ['object' for i in range(len(input_bb))]
         else:
-            # run grounding dino model
-            boxes_filt, scores, pred_phrases = get_grounding_output(
-                model, image, text_prompt, box_threshold, text_threshold, device=device
-            )
-
-            size = image_pil.size
-            H, W = size[1], size[0]
-            for i in range(boxes_filt.size(0)):
-                boxes_filt[i] = boxes_filt[i] * torch.Tensor([W, H, W, H])
-                boxes_filt[i][:2] -= boxes_filt[i][2:] / 2
-                boxes_filt[i][2:] += boxes_filt[i][:2]
-
-            input_bb = boxes_filt.cpu()
-
-            if use_nms:
-                # use NMS to handle overlapped boxes
-                # print(f"Before NMS: {input_bb.shape[0]} boxes")
-                nms_idx = torchvision.ops.nms(input_bb, scores, iou_threshold).numpy().tolist()
-                input_bb = input_bb[nms_idx]
-                pred_phrases = [pred_phrases[idx] for idx in nms_idx]
-                # print(f"After NMS: {input_bb.shape[0]} boxes")
-            
+            yolov8_boxex = yolov8_detection(model, input_image, args)
+            input_bb = torch.tensor(yolov8_boxex, device=predictor.device)
+            pred_phrases = ['object' for i in range(len(input_bb))]
         # if view_idx >=64 and view_idx <= 221:
         #     input_bb = record_bb 
-        input_image = cv2.imread(image_path)
-        input_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB)
+
         predictor.set_image(input_image)
         transformed_boxes = predictor.transform.apply_boxes_torch(input_bb, input_image.shape[:2]).to(device)
-        if len(input_bb) == 0:
-            masks, _, _ = predictor.predict_torch(
-                point_coords=None,
-                point_labels=None,
-                boxes=None,
-                multimask_output=False,
-            )
-        else:
-            masks, _, _ = predictor.predict_torch(
-                point_coords=None,
-                point_labels=None,
-                boxes=transformed_boxes.to(device),
-                multimask_output=False,
-            )
+        masks, _, _ = predictor.predict_torch(
+            point_coords=None,
+            point_labels=None,
+            boxes=transformed_boxes.to(device),
+            multimask_output=False,
+        )
 
         if vis_save and view_idx in vis_save_index:
             # draw output image
             plt.figure(figsize=(10, 10))
             plt.imshow(input_image)
             for box, label in zip(input_bb, pred_phrases):
-                show_box(box.numpy(), plt.gca(), label)
+                show_box(box.cpu().numpy(), plt.gca(), label)
             for mask in masks:
                 show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
 

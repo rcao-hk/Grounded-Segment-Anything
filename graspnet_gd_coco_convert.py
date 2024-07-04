@@ -170,7 +170,7 @@ for camera in ['realsense']:
         "annotations": train_annotations
     }
     with open(os.path.join(label_save_root, "trainval.json"), 'w') as f:
-        json.dump(annotation_all_dict, f, indent=2)
+        json.dump(train_dict, f, indent=2)
 
     test_dict = {
         "images": test_images,
@@ -178,4 +178,4 @@ for camera in ['realsense']:
         "annotations": test_annotations
     }
     with open(os.path.join(label_save_root, "test.json"), 'w') as f:
-        json.dump(annotation_all_dict, f, indent=2)
+        json.dump(test_dict, f, indent=2)

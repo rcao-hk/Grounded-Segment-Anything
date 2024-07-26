@@ -55,17 +55,18 @@ def check_images_and_masks(folder_path, ignore_first=False):
                 mask = cv2.imread(mask_path, cv2.IMREAD_UNCHANGED)
                 print(rgb_path, np.unique(mask))
                 if mask is not None and np.any(mask > 0):  # 检查mask是否有物体
-                    valid_images_list.append(image_path)
+                    relative_image_path = os.path.relpath(image_path, start=data_list_save_root)
+                    valid_images_list.append(relative_image_path)
 
     return valid_images_list
 
 
 # 替换此路径为你的数据集根目录
-dataset_root_path = '/media/gpuadmin/rcao/dataset/OCID/data/OCID-dataset'
-data_list_save_root = '/media/gpuadmin/rcao/dataset/OCID'
+dataset_root_path = '/media/user/4TB-1/dataset/UOIS/OCID'
+data_list_save_root = '/media/user/4TB-1/dataset/UOIS/OCID'
 valid_images = valid_images_with_masks(dataset_root_path)
 print(f"Total valid images: {len(valid_images)}")
 
-# with open(os.path.join(data_list_save_root, "data_list.txt"), 'w') as f:
-#     for i in valid_images:
-#         f.write(i+'\n')
+with open(os.path.join(data_list_save_root, "data_list.txt"), 'w') as f:
+    for i in valid_images:
+        f.write(i+'\n')

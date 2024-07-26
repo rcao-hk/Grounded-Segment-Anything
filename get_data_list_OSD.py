@@ -27,7 +27,7 @@ def get_png_files_with_relative_paths(search_directory, save_file_path):
             file.write(path + '\n')
 
 # 你的具体路径
-search_directory_path = '/media/gpuadmin/rcao/dataset/OSD/image_color'
-save_file_path = '/media/gpuadmin/rcao/dataset/OSD'
+search_directory_path = '/media/user/4TB-1/dataset/UOIS/OSD/image_color'
+save_file_path = '/media/user/4TB-1/dataset/UOIS/OSD'
 get_png_files_with_relative_paths(search_directory_path, save_file_path)
 

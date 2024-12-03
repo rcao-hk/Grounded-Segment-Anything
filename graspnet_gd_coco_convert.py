@@ -1,13 +1,13 @@
 import os
 from shutil import copyfile
 
-dataset_root = '/media/gpuadmin/rcao/dataset/graspnet'
-dataset_save_root = '/media/gpuadmin/rcao/dataset/graspnet_uois'
+dataset_root = '/media/user/data1/rcao/graspnet'
+dataset_save_root = '/media/user/data1/rcao/graspnet_uois'
 
 import json
 import numpy as np
 from PIL import Image
-
+from pycocotools import mask as mask_util
 
 # Helper function to calculate bounding boxes from masks
 def calculate_points(mask):
@@ -32,11 +32,14 @@ def calculate_area(bbox):
     return bbox[2] * bbox[3]
 
 
-def calculate_segmentation(bbox):
-    """ Calculate the segmentation from the bounding box [x_min, y_min, width, height]. """
-    x_min, y_min, width, height = bbox
-    return [[x_min, y_min, x_min, y_min + height, x_min + width, y_min + height, x_min + width, y_min]]
-
+# def calculate_segmentation(bbox):
+#     """ Calculate the segmentation from the bounding box [x_min, y_min, width, height]. """
+#     x_min, y_min, width, height = bbox
+#     return [[x_min, y_min, x_min, y_min + height, x_min + width, y_min + height, x_min + width, y_min]]
+def calculate_segmentation(mask):
+    rle = mask_util.encode(np.array(mask[:, :, None].astype(np.uint8), order='F', dtype='uint8'))[0]
+    rle['counts'] = rle['counts'].decode('utf-8')
+    return rle
 
 # Function to create a COCO formatted JSON file from a set of images and masks
 def create_custom_json(image_path, mask_path, json_file):
@@ -96,9 +99,9 @@ def create_coco_label_json(image_star_idx, anno_start_idx, image_path, mask_path
             continue
         obj_mask = (mask == obj_id)
         bbox = calculate_bbox(obj_mask)
-        area = calculate_area(bbox)
-        segmentation = calculate_segmentation(bbox)
-
+        # area = calculate_area(bbox)
+        segmentation = calculate_segmentation(obj_mask)
+        area = float(mask_util.area(segmentation))
         annotations.append({
             "iscrowd": 0,
             "category_id": 1,
@@ -112,7 +115,7 @@ def create_coco_label_json(image_star_idx, anno_start_idx, image_path, mask_path
 
 
 train_list = list(range(100))
-test_list = list(range(100, 190))
+test_list = list(range(100, 130))
 
 images = []
 annotations = []
@@ -121,11 +124,11 @@ train_annotations = []
 test_images = []
 test_annotations = []
 
-sample_interval = 25
+sample_interval = 1
 for camera in ['realsense']:
     label_save_root = os.path.join(dataset_save_root, camera, 'annotations')
     os.makedirs(label_save_root, exist_ok=True)
-    for scene_idx in range(190):
+    for scene_idx in range(130):
         for view_idx in range(256):
             if view_idx % sample_interval != 0:
                 continue
